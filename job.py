@@ -6,7 +6,7 @@ import os
 tf.set_page_config(page_title="Job Application Tracker", layout="wide")
 tf.title("💼 Job Application Tracker")
 
-# ชื่อไฟล์สำหรับเก็บข้อมูล (จำลองฐานข้อมูลเป็นไฟล์ CSV)
+# ชื่อไฟล์สำหรับเก็บข้อมูล
 DB_FILE = "job_applications.csv"
 
 # ฟังก์ชันสำหรับโหลดข้อมูล
@@ -45,9 +45,10 @@ if action == "➕ Add New Job":
         
         if submit_btn:
             if company and position:
-                # ตรวจสอบว่าบริษัทนี้มีอยู่แล้วหรือไม่ เพื่อป้องกันการสับสน
-                if company.lower() in df["Company"].str.lower().values:
-                    tf.sidebar.warning(f"⚠️ {company} already exists! Use 'Update Existing Job' to change its status.")
+                # ตรวจสอบว่าบริษัท + ตำแหน่งนี้ เคยสมัครไปแล้วหรือยัง
+                exists = not df[(df["Company"].str.lower() == company.lower()) & (df["Position"].str.lower() == position.lower())].empty
+                if exists:
+                    tf.sidebar.warning(f"⚠️ You already applied for '{position}' at {company}!")
                 else:
                     new_row = pd.DataFrame([{
                         "Company": company,
@@ -59,7 +60,7 @@ if action == "➕ Add New Job":
                     df = pd.concat([df, new_row], ignore_index=True)
                     save_data(df)
                     tf.session_state.df = df
-                    tf.sidebar.success(f"🎉 Added {company} successfully!")
+                    tf.sidebar.success(f"🎉 Added {company} ({position}) successfully!")
                     tf.rerun()
             else:
                 tf.sidebar.error("❌ Please fill in Company Name and Position.")
@@ -69,21 +70,22 @@ elif action == "🔄 Update Existing Job":
     if df.empty:
         tf.sidebar.info("No applications found to update. Please add a new job first.")
     else:
-        # ดึงรายชื่อบริษัทที่มีอยู่มาทำเป็นรายการให้เลือก
-        company_list = df["Company"].tolist()
-        selected_company = tf.sidebar.selectbox("Select Company to Update:", company_list)
+        # สร้างรายการให้เลือกแบบ "บริษัท - ตำแหน่ง" เพื่อไม่ให้ซ้ำกัน
+        df["Display_Name"] = df["Company"] + " (" + df["Position"] + ")"
+        display_list = df["Display_Name"].tolist()
         
-        # ดึงข้อมูลแถวเดิมของบริษัทที่เลือกมาแสดงเป็นค่าเริ่มต้น
-        row_idx = df[df["Company"] == selected_company].index[0]
+        selected_display = tf.sidebar.selectbox("Select Job to Update:", display_list)
+        
+        # ค้นหาแถวที่ตรงกับที่เลือก
+        row_idx = df[df["Display_Name"] == selected_display].index[0]
+        current_company = df.loc[row_idx, "Company"]
         current_position = df.loc[row_idx, "Position"]
         current_status = df.loc[row_idx, "Status"]
         current_notes = df.loc[row_idx, "Notes"] if pd.notna(df.loc[row_idx, "Notes"]) else ""
         
         with tf.sidebar.form("update_form"):
-            tf.write(f"**Updating:** {selected_company}")
-            position = tf.text_input("Position", value=current_position)
+            tf.write(f"**Updating:** {current_company} - {current_position}")
             
-            # ค้นหาตำแหน่งดัชนีของสถานะปัจจุบันเพื่อเลือกเป็นค่าเริ่มต้นในกล่อง
             try:
                 status_idx = status_options.index(current_status)
             except ValueError:
@@ -95,15 +97,20 @@ elif action == "🔄 Update Existing Job":
             update_btn = tf.form_submit_button("Save Updates")
             
             if update_btn:
-                # อัปเดตข้อมูลทับแถวเดิมโดยตรง ไม่เพิ่มแถวใหม่
-                df.loc[row_idx, "Position"] = position
+                # อัปเดตข้อมูลทับแถวเดิม
                 df.loc[row_idx, "Status"] = status
                 df.loc[row_idx, "Notes"] = notes
                 
-                save_data(df)
-                tf.session_state.df = df
-                tf.sidebar.success(f"🔄 Updated {selected_company} successfully!")
+                # ลบคอลัมน์ชั่วคราวก่อนบันทึกไฟล์
+                df_to_save = df.drop(columns=["Display_Name"], errors="ignore")
+                save_data(df_to_save)
+                tf.session_state.df = df_to_save
+                tf.sidebar.success(f"🔄 Updated successfully!")
                 tf.rerun()
+
+# ลบคอลัมน์ Display_Name ออกถ้ามีค้างอยู่ตอนแสดงผล
+if "Display_Name" in df.columns:
+    df = df.drop(columns=["Display_Name"])
 
 # --- ส่วนแสดงผลหน้าแรก (Dashboard & Table) ---
 if df.empty:
@@ -114,7 +121,7 @@ else:
     col1.metric("Total Applications", len(df))
     col2.metric("Interviewing 🎯", len(df[df["Status"] == "Interviewing"]))
     col3.metric("Offered 🎉", len(df[df["Status"] == "Offered"]))
-    col4.metric("Pending ⏳", len(df[df["Status"] == "Applied"]))
+    col4.metric("Applied ⏳", len(df[df["Status"] == "Applied"]))
     
     tf.markdown("---")
     
@@ -122,7 +129,6 @@ else:
     tf.subheader("🔍 Filter & View Applications")
     filter_status = tf.multiselect("Filter by Status:", status_options, default=status_options)
     
-    # กรองข้อมูลตามที่เลือก
     filtered_df = df[df["Status"].isin(filter_status)]
     
     # 3. ตารางแสดงผล
